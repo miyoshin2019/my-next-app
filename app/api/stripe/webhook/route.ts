@@ -1,20 +1,78 @@
 // app/api/stripe/webhook/route.ts
+import Stripe from "stripe";
+import { headers } from "next/headers";
 import { NextResponse } from "next/server";
-import { appendRowToSheet } from "@/lib/sheets"; // ←あなたの実装に合わせて
+import { appendRow, existsByEmailAndSession } from "@/lib/sheets";
+
+export const runtime = "nodejs"; // Stripe SDK + GoogleapisはNode実行が安全
+
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
 
 export async function POST(req: Request) {
   try {
-    const bodyText = await req.text();
+    const body = await req.text();
+    const sig = (await headers()).get("stripe-signature");
+    if (!sig) return NextResponse.json({ ok: false, error: "Missing stripe-signature" }, { status: 400 });
 
-    await appendRowToSheet([
-      new Date().toISOString(),
-      "stripe-webhook-hit",
-      bodyText.slice(0, 100), // 長すぎると邪魔なので先頭だけ
-    ]);
+    const whsec = process.env.STRIPE_WEBHOOK_SECRET;
+    if (!whsec) return NextResponse.json({ ok: false, error: "Missing STRIPE_WEBHOOK_SECRET" }, { status: 500 });
+
+    const event = stripe.webhooks.constructEvent(body, sig, whsec);
+
+    // ✅ 初回のCheckout完了だけ見る（サブスク継続課金は invoice.paid 等で来るが今回は無視）
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as Stripe.Checkout.Session;
+
+      const email = session.customer_details?.email ?? "";
+      const name = session.customer_details?.name ?? "";
+      const phone = session.customer_details?.phone ?? "";
+
+      const addr = session.customer_details?.address;
+      const address = addr
+        ? [
+            addr.postal_code,
+            addr.state,
+            addr.city,
+            addr.line1,
+            addr.line2,
+          ].filter(Boolean).join(" ")
+        : "";
+
+      const stripeSessionId = session.id ?? "";
+      const stripeCustomerId = (typeof session.customer === "string" ? session.customer : session.customer?.id) ?? "";
+      const stripeSubscriptionId =
+        (typeof session.subscription === "string" ? session.subscription : session.subscription?.id) ?? "";
+
+      if (!email || !stripeSessionId) {
+        return NextResponse.json({ ok: false, error: "Missing email or session.id" }, { status: 400 });
+      }
+
+      // ✅ 重複防止（email + stripe_session_id）
+      const exists = await existsByEmailAndSession(email, stripeSessionId);
+      if (exists) {
+        return NextResponse.json({ ok: true, skipped: true });
+      }
+
+      // ✅ 列順に合わせて追加
+      await appendRow([
+        new Date().toISOString(), // A created_at
+        email,                    // B email
+        name,                     // C name
+        phone,                    // D phone
+        address,                  // E address
+        stripeSessionId,          // F stripe_session_id
+        stripeCustomerId,         // G stripe_customer_id
+        stripeSubscriptionId,     // H stripe_subscription_id
+        "FALSE",                  // I invite_sent
+        "",                       // J invite_code
+        "",                       // K discord_id
+      ]);
+    }
 
     return NextResponse.json({ ok: true });
   } catch (e: any) {
-    console.error("webhook error:", e?.message || e);
-    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
+    // Vercelのログでここが見える
+    console.error("stripe webhook error:", e?.message ?? e);
+    return NextResponse.json({ ok: false, error: e?.message ?? "unknown" }, { status: 500 });
   }
 }
