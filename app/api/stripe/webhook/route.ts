@@ -1,47 +1,20 @@
-import Stripe from "stripe";
-import { NextRequest, NextResponse } from "next/server";
-import { appendRow } from "@/lib/sheets";
+// app/api/stripe/webhook/route.ts
+import { NextResponse } from "next/server";
+import { appendRowToSheet } from "@/lib/sheets"; // ←あなたの実装に合わせて
 
-const stripe = new Stripe(process.env.STRIPE_SECRET_KEY!);
-
-export async function POST(req: NextRequest) {
+export async function POST(req: Request) {
   try {
-    const sig = req.headers.get("stripe-signature");
-    if (!sig) return NextResponse.json({ ok: false, error: "Missing stripe-signature" }, { status: 400 });
+    const bodyText = await req.text();
 
-    const webhookSecret = process.env.STRIPE_WEBHOOK_SECRET;
-    if (!webhookSecret) return NextResponse.json({ ok: false, error: "STRIPE_WEBHOOK_SECRET is missing" }, { status: 500 });
-
-    // 署名検証には “生の本文” が必要
-    const rawBody = await req.text();
-
-    const event = stripe.webhooks.constructEvent(rawBody, sig, webhookSecret);
-
-    // 必要なイベントだけ処理
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object as Stripe.Checkout.Session;
-
-      const email = session.customer_details?.email ?? "";
-      const name = session.customer_details?.name ?? "";
-      const phone = session.customer_details?.phone ?? "";
-
-      const addr = session.customer_details?.address;
-      const addressStr = addr
-        ? `${addr.postal_code ?? ""} ${addr.state ?? ""} ${addr.city ?? ""} ${addr.line1 ?? ""} ${addr.line2 ?? ""}`.trim()
-        : "";
-
-      // 1行追加（好きな列順にしてOK）
-      await appendRow([
-        new Date().toISOString(),
-        email,
-        name,
-        phone,
-        addressStr,
-      ]);
-    }
+    await appendRowToSheet([
+      new Date().toISOString(),
+      "stripe-webhook-hit",
+      bodyText.slice(0, 100), // 長すぎると邪魔なので先頭だけ
+    ]);
 
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
-    return NextResponse.json({ ok: false, error: err?.message ?? String(err) }, { status: 500 });
+  } catch (e: any) {
+    console.error("webhook error:", e?.message || e);
+    return NextResponse.json({ ok: false, error: String(e?.message || e) }, { status: 500 });
   }
 }
