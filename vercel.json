@@ -1,7 +1,7 @@
 {
   "crons": [
     {
-      "path": "/api/invites/run?token=dev-secret-123",
+      "path": "/api/invites/run?token=c0582426c587bc5fdea3b8a5757b9aa79b3051a0fdf215a00d7a1e04047221a2",
       "schedule": "0 1 * * *"
     }
   ]
