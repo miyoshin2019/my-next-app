@@ -118,3 +118,14 @@ export async function markInviteSent(rowNumber: number, inviteCode: string) {
     requestBody: { values: [["TRUE", inviteCode]] },
   });
 }
+export async function setNote(rowNumber: number, note: string) {
+  const { spreadsheetId, sheetName } = getConfig();
+  const sheets = getSheetsClient();
+
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range: `${sheetName}!L${rowNumber}`, // L列(note)
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values: [[note]] },
+  });
+}

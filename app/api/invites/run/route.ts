@@ -1,15 +1,16 @@
 // app/api/invites/run/route.ts
 import { NextResponse } from "next/server";
 import crypto from "crypto";
-import { getUnsentRows, markInviteSent } from "@/lib/sheets";
+import { getUnsentRows, markInviteSent, setNote } from "@/lib/sheets";
 import { sendInviteEmail } from "@/lib/resend";
 
 export const runtime = "nodejs";
 
-// ✅ DNS認証が通って送信できるようになったら false にする
+// ✅ 本番は false（送信する）
+// テストで「送らずに動作だけ確認」したい時は true
 const DRY_RUN = false;
 
-// ✅ 暴発防止：1回の実行で送る上限（必要なら変更）
+// ✅ 暴発防止：1回の実行で送る上限
 const MAX_PER_RUN = 20;
 
 function mustEnv(name: string) {
@@ -34,14 +35,22 @@ export async function GET(req: Request) {
     }
 
     // ✅ 招待URLのベース（あなたのサイトの /invite）
+    // 例: https://my-next-app-ggsy.vercel.app/invite
     const inviteBase = mustEnv("DISCORD_INVITE_BASE_URL");
 
-    // 未送信を取得（多くても MAX_PER_RUN まで処理）
+    // invite_sent が FALSE/空 の行だけ取得（最大 MAX_PER_RUN）
     const rows = await getUnsentRows(MAX_PER_RUN);
 
     let processed = 0;
     let sent = 0;
-    const results: Array<{ email: string; rowNumber: number; inviteCode: string; status: string }> = [];
+
+    const results: Array<{
+      email: string;
+      rowNumber: number;
+      inviteCode: string;
+      status: string;
+      note?: string;
+    }> = [];
 
     for (const r of rows) {
       processed++;
@@ -49,13 +58,18 @@ export async function GET(req: Request) {
       const inviteCode = makeInviteCode();
       const inviteUrl = `${inviteBase}?code=${encodeURIComponent(inviteCode)}`;
 
-      // ✅ DRY_RUN のときは「送らない・更新しない」
+      // ✅ DRY_RUN のときは「送らない・更新しない」（安全）
       if (DRY_RUN) {
-        results.push({ email: r.email, rowNumber: r.rowNumber, inviteCode, status: "dry_run_skipped" });
+        results.push({
+          email: r.email,
+          rowNumber: r.rowNumber,
+          inviteCode,
+          status: "dry_run_skipped",
+        });
         continue;
       }
 
-      // ✅ 実送信 → 成功したらシート更新（再送なし運用の最適解）
+      // ✅ 実送信（ここで失敗したら throw → シート更新されない）
       await sendInviteEmail({
         to: r.email,
         name: r.name,
@@ -63,10 +77,23 @@ export async function GET(req: Request) {
         inviteCode,
       });
 
+      const sentAtIso = new Date().toISOString();
+
+      // ✅ 送信成功後にだけシート更新（再送なし運用の最適解）
       await markInviteSent(r.rowNumber, inviteCode);
 
+      // ✅ L列(note)に送信日時を記録
+      const note = `invite_email_sent_at=${sentAtIso}`;
+      await setNote(r.rowNumber, note);
+
       sent++;
-      results.push({ email: r.email, rowNumber: r.rowNumber, inviteCode, status: "sent_and_marked" });
+      results.push({
+        email: r.email,
+        rowNumber: r.rowNumber,
+        inviteCode,
+        status: "sent_and_marked",
+        note,
+      });
     }
 
     return NextResponse.json({
